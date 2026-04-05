@@ -12,11 +12,12 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 import requests
 import json
 import tempfile
+import re
 
-BOT_TOKEN = "8657903558:AAFjDz8wlX-wgaHHiDvdQgVFmnmUhThbPIE"
+BOT_TOKEN = "8389147569:AAGF2RxBRe8AiaW0_wN4rooJ5WF06zYtMho"
 
 # Admin Configuration
-ADMIN_ID = 8446135201  # REPLACE WITH YOUR ACTUAL CHAT ID
+ADMIN_ID = 7643981409  # REPLACE WITH YOUR ACTUAL CHAT ID
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -24,8 +25,8 @@ BASE_DIR = "projects"
 os.makedirs(BASE_DIR, exist_ok=True)
 
 # Store running processes per user
-running_projects = {}  # {user_id: {project_name: {"process": process, "cwd": path}}}
-project_errors = {}  # {user_id: {project_name: error}}
+running_projects = {}
+project_errors = {}
 
 # Admin statistics
 admin_stats = {
@@ -37,6 +38,21 @@ admin_stats = {
 
 # Store environment variables
 project_env_vars = {}
+
+# Helper function to escape markdown
+def escape_markdown(text):
+    """Escape special characters for Telegram Markdown"""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return ''.join(f'\\{char}' if char in escape_chars else char for char in str(text))
+
+def safe_send_message(chat_id, text, parse_mode="Markdown", reply_markup=None):
+    """Safely send message with fallback to plain text"""
+    try:
+        return bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception as e:
+        # If markdown fails, send without markdown
+        plain_text = re.sub(r'[*_`~]', '', text)
+        return bot.send_message(chat_id, plain_text, reply_markup=reply_markup)
 
 # ============== SIMPLE UI ==============
 
@@ -82,7 +98,7 @@ def get_admin_keyboard():
     )
     return markup
 
-# ============== GITHUB INTEGRATION (No git module required) ==============
+# ============== GITHUB INTEGRATION (Fixed) ==============
 
 @bot.message_handler(func=lambda m: m.text == "🐙 GitHub Deploy")
 def github_deploy_menu(msg):
@@ -91,13 +107,12 @@ def github_deploy_menu(msg):
         InlineKeyboardButton("📦 Deploy from GitHub URL", callback_data="github_url"),
         InlineKeyboardButton("📋 My GitHub Projects", callback_data="github_my")
     )
-    bot.send_message(msg.chat.id, "🐙 *GitHub Deployment*\n\nChoose deployment method:", 
-                     parse_mode="Markdown", reply_markup=markup)
+    safe_send_message(msg.chat.id, "🐙 GitHub Deployment\n\nChoose deployment method:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "github_url")
 def handle_github_url(call):
-    bot.edit_message_text("🔗 *Enter GitHub Repository URL*\n\nExample: `https://github.com/username/repo`\n\nOr /cancel to cancel",
-                        call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    bot.edit_message_text("🔗 Enter GitHub Repository URL\n\nExample: https://github.com/username/repo\n\nSend /cancel to cancel",
+                        call.message.chat.id, call.message.message_id)
     bot.register_next_step_handler(call.message, process_github_download)
 
 @bot.callback_query_handler(func=lambda call: call.data == "github_my")
@@ -111,21 +126,21 @@ def show_github_projects(call):
             github_projects.append(project)
     
     if not github_projects:
-        bot.edit_message_text("📭 *No GitHub projects found*\n\nUse '🐙 GitHub Deploy' to add one.",
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text("📭 No GitHub projects found\n\nUse GitHub Deploy to add one.",
+                            call.message.chat.id, call.message.message_id)
         return
     
-    text = "🐙 *YOUR GITHUB PROJECTS*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    text = "🐙 YOUR GITHUB PROJECTS\n━━━━━━━━━━━━━━━━━━━━━━\n"
     for proj in github_projects:
         is_running = proj in get_user_running_projects(user_id)
         status = "🟢 Running" if is_running else "⚪ Stopped"
-        text += f"\n📁 `{proj}`\n└─ Status: {status}\n"
+        text += f"\n📁 {proj}\n└─ Status: {status}\n"
     
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
 
 def process_github_download(msg):
     if msg.text == "/cancel":
-        bot.send_message(msg.chat.id, "❌ Cancelled.", reply_markup=get_main_keyboard(msg.chat.id))
+        safe_send_message(msg.chat.id, "❌ Cancelled.", reply_markup=get_main_keyboard(msg.chat.id))
         return
     
     url = msg.text.strip()
@@ -138,16 +153,16 @@ def process_github_download(msg):
             repo = parts[1].replace(".git", "")
             download_url = f"https://github.com/{username}/{repo}/archive/refs/heads/main.zip"
             
-            status_msg = bot.send_message(msg.chat.id, f"⏳ *Downloading {repo} from GitHub...*", parse_mode="Markdown")
+            status_msg = safe_send_message(msg.chat.id, f"⏳ Downloading {repo} from GitHub...")
             
             try:
-                # Download the zip file
-                response = requests.get(download_url)
+                # Download the zip file with timeout
+                response = requests.get(download_url, timeout=30)
                 
                 if response.status_code == 404:
                     # Try master branch instead
                     download_url = f"https://github.com/{username}/{repo}/archive/refs/heads/master.zip"
-                    response = requests.get(download_url)
+                    response = requests.get(download_url, timeout=30)
                 
                 if response.status_code == 200:
                     # Save and extract
@@ -176,20 +191,20 @@ def process_github_download(msg):
                     
                     os.remove(zip_path)
                     
-                    bot.edit_message_text("📦 *Extracted!*", msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+                    bot.edit_message_text("📦 Extracted!", msg.chat.id, status_msg.message_id)
                     
-                    # Install requirements
+                    # Install requirements in background
                     req_file = os.path.join(extract_path, "requirements.txt")
                     if os.path.exists(req_file):
-                        subprocess.run(["pip", "install", "-r", req_file], cwd=extract_path, capture_output=True)
-                        bot.edit_message_text("📥 *Requirements Installed*", msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+                        bot.edit_message_text("📥 Installing requirements...", msg.chat.id, status_msg.message_id)
+                        subprocess.Popen(["pip", "install", "-r", req_file], cwd=extract_path, 
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     
                     size = get_folder_size(extract_path)
                     
                     # Check for main.py
                     main_file = os.path.join(extract_path, "main.py")
                     if not os.path.exists(main_file):
-                        # Look for any .py file
                         py_files = [f for f in os.listdir(extract_path) if f.endswith('.py')]
                         if py_files:
                             shutil.move(os.path.join(extract_path, py_files[0]), main_file)
@@ -200,22 +215,26 @@ def process_github_download(msg):
                         InlineKeyboardButton("⚙️ Set Env Vars", callback_data=f"env_{project_name}")
                     )
                     
-                    bot.edit_message_text(f"✅ *GitHub Project Deployed!*\n\n"
-                                     f"📁 Name: `{project_name}`\n"
-                                     f"📦 Size: {size}\n"
-                                     f"📄 main.py: {'✅' if os.path.exists(main_file) else '❌'}\n"
-                                     f"🐙 Repo: {url}\n\n"
-                                     f"Click below to start:",
-                                     msg.chat.id, status_msg.message_id, parse_mode="Markdown", reply_markup=markup)
+                    bot.edit_message_text(
+                        f"✅ GitHub Project Deployed!\n\n"
+                        f"📁 Name: {project_name}\n"
+                        f"📦 Size: {size}\n"
+                        f"📄 main.py: {'✅' if os.path.exists(main_file) else '❌'}\n"
+                        f"🐙 Repo: {url}\n\n"
+                        f"Click below to start:",
+                        msg.chat.id, status_msg.message_id, reply_markup=markup)
                 else:
-                    bot.edit_message_text(f"❌ *Failed to download repository*\nStatus: {response.status_code}\nMake sure the repository exists and is public.", 
-                                        msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+                    bot.edit_message_text(f"❌ Failed to download repository\nStatus: {response.status_code}", 
+                                        msg.chat.id, status_msg.message_id)
+            except requests.exceptions.Timeout:
+                bot.edit_message_text("❌ Download timeout! The repository might be too large.", 
+                                    msg.chat.id, status_msg.message_id)
             except Exception as e:
-                bot.edit_message_text(f"❌ *Error:* `{str(e)[:200]}`", msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+                bot.edit_message_text(f"❌ Error: {str(e)[:100]}", msg.chat.id, status_msg.message_id)
         else:
-            bot.send_message(msg.chat.id, "❌ *Invalid GitHub URL*", parse_mode="Markdown")
+            safe_send_message(msg.chat.id, "❌ Invalid GitHub URL")
     else:
-        bot.send_message(msg.chat.id, "❌ *Please provide a valid GitHub URL*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "❌ Please provide a valid GitHub URL")
 
 # ============== ENVIRONMENT VARIABLES ==============
 
@@ -225,22 +244,21 @@ def env_vars_menu(msg):
     projects = get_user_projects(user_id)
     
     if not projects:
-        bot.send_message(msg.chat.id, "📂 *No projects found*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "📂 No projects found")
         return
     
     markup = InlineKeyboardMarkup(row_width=2)
     for project in projects:
         markup.add(InlineKeyboardButton(f"⚙️ {project}", callback_data=f"env_{project}"))
     
-    bot.send_message(msg.chat.id, "⚙️ *Select project to configure environment variables:*",
-                     parse_mode="Markdown", reply_markup=markup)
+    safe_send_message(msg.chat.id, "⚙️ Select project to configure environment variables:",
+                     reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("env_"))
 def handle_env_vars(call):
     user_id = call.message.chat.id
     project_name = call.data.replace("env_", "")
     
-    # Get current env vars
     if user_id not in project_env_vars:
         project_env_vars[user_id] = {}
     if project_name not in project_env_vars[user_id]:
@@ -248,15 +266,15 @@ def handle_env_vars(call):
     
     current_vars = project_env_vars[user_id][project_name]
     
-    text = f"⚙️ *Environment Variables for `{project_name}`*\n\n"
+    text = f"⚙️ Environment Variables for {project_name}\n\n"
     if current_vars:
-        text += "📋 *Current Variables:*\n"
+        text += "📋 Current Variables:\n"
         for key, value in current_vars.items():
-            text += f"├─ {key} = `{value[:20]}`\n"
+            text += f"├─ {key} = {value[:20]}\n"
     else:
-        text += "📭 *No environment variables set*\n"
+        text += "📭 No environment variables set\n"
     
-    text += "\n🔧 *Actions:*"
+    text += "\n🔧 Actions:"
     
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -266,29 +284,34 @@ def handle_env_vars(call):
         InlineKeyboardButton("🔙 Back", callback_data="env_back")
     )
     
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                         parse_mode="Markdown", reply_markup=markup)
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("env_add_"))
 def env_add_var(call):
     project_name = call.data.replace("env_add_", "")
-    bot.edit_message_text(f"📝 *Add Environment Variable for `{project_name}`*\n\n"
-                         f"Send in format: `KEY=value`\n\nExample: `PORT=8080`\n`DATABASE_URL=postgresql://localhost/db`\n\nType /cancel to cancel",
-                         call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    bot.edit_message_text(f"📝 Add Environment Variable for {project_name}\n\n"
+                         f"Send in format: KEY=value\n\nExample: PORT=8080\n\nSend /cancel to cancel",
+                         call.message.chat.id, call.message.message_id)
     bot.register_next_step_handler(call.message, process_env_add, project_name)
 
 def process_env_add(msg, project_name):
     if msg.text == "/cancel":
-        bot.send_message(msg.chat.id, "❌ Cancelled.", reply_markup=get_main_keyboard(msg.chat.id))
+        safe_send_message(msg.chat.id, "❌ Cancelled.", reply_markup=get_main_keyboard(msg.chat.id))
         return
     
     user_id = msg.chat.id
     
     try:
+        if '=' not in msg.text:
+            raise ValueError("No equals sign found")
+            
         key, value = msg.text.split('=', 1)
         key = key.strip().upper()
         value = value.strip()
+        
+        if not key or not value:
+            raise ValueError("Empty key or value")
         
         if user_id not in project_env_vars:
             project_env_vars[user_id] = {}
@@ -297,7 +320,7 @@ def process_env_add(msg, project_name):
         
         project_env_vars[user_id][project_name][key] = value
         
-        # Save to .env file in project directory
+        # Save to .env file
         project_path = os.path.join(get_user_dir(user_id), project_name)
         env_file = os.path.join(project_path, ".env")
         
@@ -305,19 +328,17 @@ def process_env_add(msg, project_name):
             for k, v in project_env_vars[user_id][project_name].items():
                 f.write(f"{k}={v}\n")
         
-        bot.send_message(msg.chat.id, f"✅ *Variable added:* `{key}={value[:30]}`",
-                        parse_mode="Markdown")
+        safe_send_message(msg.chat.id, f"✅ Variable added: {key}={value[:30]}")
         
-        # Restart project if running to apply new env vars
+        # Restart project if running
         if project_name in get_user_running_projects(user_id):
             stop_project(user_id, project_name)
             time.sleep(1)
             start_project(user_id, project_name)
-            bot.send_message(msg.chat.id, f"🔄 *Project '{project_name}' restarted to apply changes*",
-                           parse_mode="Markdown")
+            safe_send_message(msg.chat.id, f"🔄 Project {project_name} restarted to apply changes")
         
-    except ValueError:
-        bot.send_message(msg.chat.id, "❌ *Invalid format!* Use `KEY=value`", parse_mode="Markdown")
+    except Exception as e:
+        safe_send_message(msg.chat.id, f"❌ Invalid format! Use KEY=value\nError: {str(e)}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("env_remove_"))
 def env_remove_var(call):
@@ -336,9 +357,8 @@ def env_remove_var(call):
             markup.add(InlineKeyboardButton(f"🗑️ {key}", callback_data=f"env_del_{project_name}_{key}"))
         markup.add(InlineKeyboardButton("🔙 Back", callback_data=f"env_{project_name}"))
         
-        bot.edit_message_text(f"🗑️ *Select variable to remove from `{project_name}`:*",
-                            call.message.chat.id, call.message.message_id,
-                            parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"🗑️ Select variable to remove from {project_name}:",
+                            call.message.chat.id, call.message.message_id, reply_markup=markup)
     
     bot.answer_callback_query(call.id)
 
@@ -358,15 +378,16 @@ def env_delete_var(call):
             project_path = os.path.join(get_user_dir(user_id), project_name)
             env_file = os.path.join(project_path, ".env")
             
-            if os.path.exists(env_file):
+            if project_env_vars[user_id][project_name]:
                 with open(env_file, 'w') as f:
                     for k, v in project_env_vars[user_id][project_name].items():
                         f.write(f"{k}={v}\n")
+            elif os.path.exists(env_file):
+                os.remove(env_file)
             
             bot.answer_callback_query(call.id, f"Removed {key}")
-            bot.edit_message_text(f"✅ *Removed variable:* `{key}`",
-                                call.message.chat.id, call.message.message_id,
-                                parse_mode="Markdown")
+            bot.edit_message_text(f"✅ Removed variable: {key}",
+                                call.message.chat.id, call.message.message_id)
             
             # Restart project if running
             if project_name in get_user_running_projects(user_id):
@@ -383,9 +404,9 @@ def env_list_vars(call):
         vars_dict = project_env_vars[user_id][project_name]
         
         if vars_dict:
-            text = f"📋 *Environment Variables for `{project_name}`*\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text = f"📋 Environment Variables for {project_name}\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
             for key, value in vars_dict.items():
-                text += f"🔑 **{key}**\n└─ `{value[:50]}`\n\n"
+                text += f"🔑 {key}\n└─ {value[:50]}\n\n"
             
             if len(text) > 4000:
                 text = text[:4000] + "\n... (truncated)"
@@ -393,8 +414,7 @@ def env_list_vars(call):
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("🔙 Back", callback_data=f"env_{project_name}"))
             
-            bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
-                                parse_mode="Markdown", reply_markup=markup)
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
         else:
             bot.answer_callback_query(call.id, "No variables set")
 
@@ -411,30 +431,30 @@ def start(msg):
     total_projects = len(get_user_projects(user_id))
     
     welcome_text = f"""
-🔥 *WELCOME TO PYTHON HOSTING*
+🔥 WELCOME TO PYTHON HOSTING
 
-✨ *Hex Python Hosting Panel v2.0*
+✨ Hex Python Hosting Panel v2.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ User-Specific Workspaces
 ✅ No File Conflicts Between Users
 ✅ Upload & Deploy Python Projects
-✅ **NEW: GitHub Repository Deploy**
-✅ **NEW: Environment Variables**
+✅ GitHub Repository Deploy
+✅ Environment Variables
 ✅ Auto-Install Requirements
 ✅ 24/7 Project Hosting
 
-👤 *Your Workspace:*
-├─ User ID: `{user_id}`
+👤 Your Workspace:
+├─ User ID: {user_id}
 ├─ Projects: {total_projects}
 ├─ Running: {len(get_user_running_projects(user_id))}
 └─ Role: {'👑 ADMIN' if is_admin else '👤 USER'}
 
-💡 *Need Help?* @Hexh4ckerOFC
+💡 Need Help? @Hexh4ckerOFC
 
-💻 *Powered by @Hexh4ckerOFC*
+💻 Powered by @Hexh4ckerOFC
     """
     
-    bot.send_message(msg.chat.id, welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard(user_id))
+    safe_send_message(msg.chat.id, welcome_text, reply_markup=get_main_keyboard(user_id))
     
     if is_admin:
         update_admin_stats()
@@ -443,26 +463,26 @@ def start(msg):
         minutes, seconds = divmod(remainder, 60)
         
         admin_notice = f"""
-👑 *ADMIN PANEL LOADED*
+👑 ADMIN PANEL LOADED
 
-📊 *Quick Stats:*
+📊 Quick Stats:
 ├─ Total Users: {admin_stats['total_users']}
 ├─ Total Projects: {admin_stats['total_projects']}
 ├─ Running: {admin_stats['total_running']}
 └─ Uptime: {hours}h {minutes}m
 
-Use the *Admin Panel* button for full control.
+Use the Admin Panel button for full control.
 
-💻 *Powered by @Hexh4ckerOFC*
+💻 Powered by @Hexh4ckerOFC
         """
-        bot.send_message(msg.chat.id, admin_notice, parse_mode="Markdown")
+        safe_send_message(msg.chat.id, admin_notice)
 
 # ============== ADMIN PANEL HANDLER ==============
 
 @bot.message_handler(func=lambda m: m.text == "👑 Admin Panel")
 def admin_panel(msg):
     if msg.chat.id != ADMIN_ID:
-        bot.send_message(msg.chat.id, "⛔ *Access Denied!* You are not authorized to use the Admin Panel.", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "⛔ Access Denied! You are not authorized to use the Admin Panel.")
         return
     
     update_admin_stats()
@@ -471,36 +491,36 @@ def admin_panel(msg):
     minutes, seconds = divmod(remainder, 60)
     
     admin_text = f"""
-👑 *ADMIN CONTROL PANEL*
+👑 ADMIN CONTROL PANEL
 
-📈 *SYSTEM STATISTICS*
+📈 SYSTEM STATISTICS
 ├─ 👥 Total Users: {admin_stats['total_users']}
 ├─ 📦 Total Projects: {admin_stats['total_projects']}
 ├─ 🟢 Running: {admin_stats['total_running']}
 ├─ ⚪ Stopped: {admin_stats['total_projects'] - admin_stats['total_running']}
 └─ ⏱️ Uptime: {hours}h {minutes}m
 
-🎛️ *CONTROLS*
+🎛️ CONTROLS
 └─ Use the buttons below to manage the system
 
-💡 *Admin Actions:*
+💡 Admin Actions:
 • View all users and their projects
 • Stop any running project
 • Broadcast messages to all users
 • Clean orphaned processes
 • View server statistics
 
-💻 *Powered by @Hexh4ckerOFC*
+💻 Powered by @Hexh4ckerOFC
     """
     
-    bot.send_message(msg.chat.id, admin_text, parse_mode="Markdown", reply_markup=get_admin_keyboard())
+    safe_send_message(msg.chat.id, admin_text, reply_markup=get_admin_keyboard())
 
 # ============== ADMIN CALLBACK HANDLERS ==============
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def handle_admin_callbacks(call):
     if call.message.chat.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "⛔ Admin access only!")
+        bot.answer_callback_query(call.id, "Admin access only!")
         return
     
     action = call.data.replace("admin_", "")
@@ -508,25 +528,25 @@ def handle_admin_callbacks(call):
     if action == "users":
         users = get_all_users()
         if not users:
-            bot.edit_message_text("📭 *No users found*", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            bot.edit_message_text("📭 No users found", call.message.chat.id, call.message.message_id)
         else:
-            user_list = f"👥 *ALL USERS LIST*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+            user_list = "👥 ALL USERS LIST\n━━━━━━━━━━━━━━━━━━━━━━\n"
             for uid in users:
                 project_count = get_user_project_count(uid)
                 running_count = len(running_projects.get(uid, {}))
-                user_list += f"\n👤 `{uid}`\n├─ 📦 {project_count} projects\n└─ 🟢 {running_count} running\n"
-            user_list += f"\n💻 *Powered by @Hexh4ckerOFC*"
+                user_list += f"\n👤 {uid}\n├─ 📦 {project_count} projects\n└─ 🟢 {running_count} running\n"
+            user_list += f"\n💻 Powered by @Hexh4ckerOFC"
             
             if len(user_list) > 4000:
                 user_list = user_list[:4000] + "\n... (truncated)"
             
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back"))
-            bot.edit_message_text(user_list, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+            bot.edit_message_text(user_list, call.message.chat.id, call.message.message_id, reply_markup=markup)
     
     elif action == "projects":
         update_admin_stats()
-        text = f"📦 *ALL PROJECTS SUMMARY*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        text = f"📦 ALL PROJECTS SUMMARY\n━━━━━━━━━━━━━━━━━━━━━━\n"
         text += f"├─ Total Projects: {admin_stats['total_projects']}\n"
         text += f"├─ Running: {admin_stats['total_running']} 🟢\n"
         text += f"└─ Stopped: {admin_stats['total_projects'] - admin_stats['total_running']} ⚪\n"
@@ -535,7 +555,7 @@ def handle_admin_callbacks(call):
         for uid in users[:10]:
             user_projects = get_user_projects(uid)
             if user_projects:
-                text += f"\n👤 User `{uid}`:\n"
+                text += f"\n👤 User {uid}:\n"
                 for proj in user_projects[:5]:
                     is_running = proj in running_projects.get(uid, {})
                     icon = "🟢" if is_running else "⚪"
@@ -543,55 +563,55 @@ def handle_admin_callbacks(call):
                 if len(user_projects) > 5:
                     text += f"  ... and {len(user_projects)-5} more\n"
         
-        text += f"\n💻 *Powered by @Hexh4ckerOFC*"
+        text += f"\n💻 Powered by @Hexh4ckerOFC"
         
         if len(text) > 4000:
             text = text[:4000] + "\n... (truncated)"
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back"))
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup)
     
     elif action == "running":
-        running_list = f"🟢 *RUNNING PROJECTS*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        running_list = "🟢 RUNNING PROJECTS\n━━━━━━━━━━━━━━━━━━━━━━\n"
         has_running = False
         for user_id, user_projects in running_projects.items():
             if user_projects:
                 has_running = True
-                running_list += f"\n👤 User `{user_id}`:\n"
+                running_list += f"\n👤 User {user_id}:\n"
                 for proj in user_projects.keys():
                     running_list += f"  🟢 {proj}\n"
         
         if not has_running:
-            running_list += "\n📭 *No projects currently running*"
+            running_list += "\n📭 No projects currently running"
         
-        running_list += f"\n💻 *Powered by @Hexh4ckerOFC*"
+        running_list += f"\n💻 Powered by @Hexh4ckerOFC"
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back"))
-        bot.edit_message_text(running_list, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(running_list, call.message.chat.id, call.message.message_id, reply_markup=markup)
     
     elif action == "errors":
-        error_list = f"⚠️ *ERROR LOGS*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        error_list = "⚠️ ERROR LOGS\n━━━━━━━━━━━━━━━━━━━━━━\n"
         has_errors = False
         for user_id, errors in project_errors.items():
             if errors:
                 has_errors = True
-                error_list += f"\n👤 User `{user_id}`:\n"
+                error_list += f"\n👤 User {user_id}:\n"
                 for proj, err in errors.items():
                     error_list += f"  📁 {proj}: {err[:50]}...\n"
         
         if not has_errors:
-            error_list += "\n✅ *No errors logged*"
+            error_list += "\n✅ No errors logged"
         
-        error_list += f"\n💻 *Powered by @Hexh4ckerOFC*"
+        error_list += f"\n💻 Powered by @Hexh4ckerOFC"
         
         if len(error_list) > 4000:
             error_list = error_list[:4000] + "\n... (truncated)"
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back"))
-        bot.edit_message_text(error_list, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(error_list, call.message.chat.id, call.message.message_id, reply_markup=markup)
     
     elif action == "server":
         try:
@@ -602,27 +622,27 @@ def handle_admin_callbacks(call):
             disk_percent = (disk_usage.used / disk_usage.total) * 100
             
             server_text = f"""
-💾 *SERVER STATISTICS*
+💾 SERVER STATISTICS
 ━━━━━━━━━━━━━━━━━━━━━━
 
-💿 *DISK USAGE*
+💿 DISK USAGE
 ├─ Total: {disk_total} GB
 ├─ Used: {disk_used} GB ({disk_percent:.1f}%)
 ├─ Free: {disk_free} GB
 └─ Status: {'⚠️ Low Space' if disk_free < 5 else '✅ Healthy'}
 
-📂 *STORAGE PATHS*
+📂 STORAGE PATHS
 ├─ Base Dir: {BASE_DIR}
 └─ Projects Path: {os.path.abspath(BASE_DIR)}
 
-💻 *Powered by @Hexh4ckerOFC*
+💻 Powered by @Hexh4ckerOFC
             """
         except:
-            server_text = f"💾 *SERVER STATISTICS*\n━━━━━━━━━━━━━━━━━━━━━━\n❌ Unable to fetch disk statistics\n\n💻 *Powered by @Hexh4ckerOFC*"
+            server_text = "💾 SERVER STATISTICS\n━━━━━━━━━━━━━━━━━━━━━━\n❌ Unable to fetch disk statistics\n\n💻 Powered by @Hexh4ckerOFC"
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back"))
-        bot.edit_message_text(server_text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(server_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
     
     elif action == "botstats":
         update_admin_stats()
@@ -631,41 +651,41 @@ def handle_admin_callbacks(call):
         minutes, seconds = divmod(remainder, 60)
         
         stats_text = f"""
-📊 *BOT STATISTICS*
+📊 BOT STATISTICS
 ━━━━━━━━━━━━━━━━━━━━━━
 
-📈 *USAGE STATS*
+📈 USAGE STATS
 ├─ 👥 Total Users: {admin_stats['total_users']}
 ├─ 📦 Total Projects: {admin_stats['total_projects']}
 ├─ 🟢 Running Projects: {admin_stats['total_running']}
 └─ 📁 Projects/User: {admin_stats['total_projects']/max(admin_stats['total_users'],1):.1f}
 
-⏱️ *BOT INFO*
+⏱️ BOT INFO
 ├─ Uptime: {hours}h {minutes}m {seconds}s
 ├─ Started: {admin_stats['bot_start_time'].strftime('%Y-%m-%d %H:%M:%S')}
-└─ Admin ID: `{ADMIN_ID}`
+└─ Admin ID: {ADMIN_ID}
 
-🔧 *SYSTEM*
+🔧 SYSTEM
 ├─ Python: {sys.version.split()[0]}
 └─ Platform: {sys.platform}
 
-💻 *Powered by @Hexh4ckerOFC*
+💻 Powered by @Hexh4ckerOFC
         """
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back"))
-        bot.edit_message_text(stats_text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(stats_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
     
     elif action == "clean":
         cleaned = clean_orphaned_processes()
-        bot.edit_message_text(f"✅ *Cleanup Complete*\n\n🗑️ Removed {cleaned} orphaned process entries", 
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"✅ Cleanup Complete\n\n🗑️ Removed {cleaned} orphaned process entries", 
+                            call.message.chat.id, call.message.message_id)
         time.sleep(2)
         admin_panel(call.message)
     
     elif action == "broadcast":
-        bot.edit_message_text("📢 *Broadcast Mode*\n\nSend the message you want to broadcast to all users.\n\nType /cancel to cancel.", 
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text("📢 Broadcast Mode\n\nSend the message you want to broadcast to all users.\n\nType /cancel to cancel.", 
+                            call.message.chat.id, call.message.message_id)
         bot.register_next_step_handler(call.message, process_broadcast)
     
     elif action == "back":
@@ -678,23 +698,23 @@ def handle_admin_callbacks(call):
 
 def process_broadcast(msg):
     if msg.text == "/cancel":
-        bot.send_message(msg.chat.id, "❌ Broadcast cancelled.", reply_markup=get_main_keyboard(msg.chat.id))
+        safe_send_message(msg.chat.id, "❌ Broadcast cancelled.", reply_markup=get_main_keyboard(msg.chat.id))
         return
     
-    status_msg = bot.send_message(msg.chat.id, "📡 *Broadcasting message...*", parse_mode="Markdown")
+    status_msg = safe_send_message(msg.chat.id, "📡 Broadcasting message...")
     
     success, failed = broadcast_message(msg.text)
     
-    bot.edit_message_text(f"✅ *Broadcast Complete*\n\n📨 Sent: {success}\n❌ Failed: {failed}", 
-                        msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+    bot.edit_message_text(f"✅ Broadcast Complete\n\n📨 Sent: {success}\n❌ Failed: {failed}", 
+                        msg.chat.id, status_msg.message_id)
     
-    bot.send_message(msg.chat.id, "👑 Admin Panel", reply_markup=get_admin_keyboard())
+    safe_send_message(msg.chat.id, "👑 Admin Panel", reply_markup=get_admin_keyboard())
 
 # ============== USER COMMANDS ==============
 
 @bot.message_handler(func=lambda m: m.text == "📦 Upload" or m.text == "📦 Upload Project")
 def upload_btn(msg):
-    bot.send_message(msg.chat.id, "📦 *Send your .zip file with:*\n• `main.py`\n• `requirements.txt`\n\n📝 *Max size: 50MB*\n🔒 *Your files are private to you*\n\n🐙 *Or use GitHub Deploy for repositories!*", parse_mode="Markdown")
+    safe_send_message(msg.chat.id, "📦 Send your .zip file with:\n• main.py\n• requirements.txt\n\n📝 Max size: 50MB\n🔒 Your files are private to you\n\n🐙 Or use GitHub Deploy for repositories!")
 
 @bot.message_handler(func=lambda m: m.text == "📁 Projects" or m.text == "📁 My Projects")
 def file_manager(msg):
@@ -703,10 +723,10 @@ def file_manager(msg):
     user_running = get_user_running_projects(user_id)
     
     if not projects:
-        bot.send_message(msg.chat.id, "📂 *No projects found*\nUse 📦 Upload or 🐙 GitHub Deploy to add one.", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "📂 No projects found\nUse 📦 Upload or 🐙 GitHub Deploy to add one.")
         return
     
-    project_list = f"📁 *YOUR PROJECTS*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    project_list = "📁 YOUR PROJECTS\n━━━━━━━━━━━━━━━━━━━━━━\n"
     for project in projects:
         is_running = project in user_running
         has_main = os.path.exists(os.path.join(get_user_dir(user_id), project, "main.py"))
@@ -719,10 +739,10 @@ def file_manager(msg):
         error_icon = "⚠️" if has_error else "✓"
         github_icon = "🐙" if is_github else "📦"
         
-        project_list += f"\n{status_icon} `{project}`\n   ├─ Type: {github_icon}\n   ├─ main.py: {main_icon}\n   └─ Status: {error_icon}\n"
+        project_list += f"\n{status_icon} {project}\n   ├─ Type: {github_icon}\n   ├─ main.py: {main_icon}\n   └─ Status: {error_icon}\n"
     
-    project_list += f"\n💻 *Powered by @Hexh4ckerOFC*"
-    bot.send_message(msg.chat.id, project_list, parse_mode="Markdown")
+    project_list += f"\n💻 Powered by @Hexh4ckerOFC"
+    safe_send_message(msg.chat.id, project_list)
 
 @bot.message_handler(func=lambda m: m.text == "▶️ Start")
 def start_project_menu(msg):
@@ -731,7 +751,7 @@ def start_project_menu(msg):
     user_running = get_user_running_projects(user_id)
     
     if not projects:
-        bot.send_message(msg.chat.id, "❌ *No projects found to start*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "❌ No projects found to start")
         return
     
     markup = InlineKeyboardMarkup(row_width=2)
@@ -740,9 +760,9 @@ def start_project_menu(msg):
             markup.add(InlineKeyboardButton(f"▶️ {project}", callback_data=f"start_{project}"))
     
     if not markup.keyboard:
-        bot.send_message(msg.chat.id, f"✅ *All your projects are already running!*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, f"✅ All your projects are already running!")
     else:
-        bot.send_message(msg.chat.id, "🚀 *Select project to start:*", parse_mode="Markdown", reply_markup=markup)
+        safe_send_message(msg.chat.id, "🚀 Select project to start:", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "⏹️ Stop")
 def stop_project_menu(msg):
@@ -750,14 +770,14 @@ def stop_project_menu(msg):
     user_running = get_user_running_projects(user_id)
     
     if not user_running:
-        bot.send_message(msg.chat.id, "⚪ *No projects are currently running*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "⚪ No projects are currently running")
         return
     
     markup = InlineKeyboardMarkup(row_width=2)
     for project in user_running.keys():
         markup.add(InlineKeyboardButton(f"⏹️ {project}", callback_data=f"stop_{project}"))
     
-    bot.send_message(msg.chat.id, "🛑 *Select project to stop:*", parse_mode="Markdown", reply_markup=markup)
+    safe_send_message(msg.chat.id, "🛑 Select project to stop:", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "🔄 Restart")
 def restart_project_menu(msg):
@@ -765,14 +785,14 @@ def restart_project_menu(msg):
     projects = get_user_projects(user_id)
     
     if not projects:
-        bot.send_message(msg.chat.id, "❌ *No projects found to restart*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "❌ No projects found to restart")
         return
     
     markup = InlineKeyboardMarkup(row_width=2)
     for project in projects:
         markup.add(InlineKeyboardButton(f"🔄 {project}", callback_data=f"restart_{project}"))
     
-    bot.send_message(msg.chat.id, "🔄 *Select project to restart:*", parse_mode="Markdown", reply_markup=markup)
+    safe_send_message(msg.chat.id, "🔄 Select project to restart:", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "🗑️ Delete")
 def delete_project_menu(msg):
@@ -780,7 +800,7 @@ def delete_project_menu(msg):
     projects = get_user_projects(user_id)
     
     if not projects:
-        bot.send_message(msg.chat.id, "📂 *No projects to delete*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "📂 No projects to delete")
         return
     
     markup = InlineKeyboardMarkup(row_width=2)
@@ -788,8 +808,7 @@ def delete_project_menu(msg):
         markup.add(InlineKeyboardButton(f"🗑️ {project}", callback_data=f"delete_{project}"))
     markup.add(InlineKeyboardButton("❌ Cancel", callback_data="cancel_delete"))
     
-    bot.send_message(msg.chat.id, "⚠️ *Select project to delete (IRREVERSIBLE):*", 
-                     parse_mode="Markdown", reply_markup=markup)
+    safe_send_message(msg.chat.id, "⚠️ Select project to delete (IRREVERSIBLE):", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "🗑️ Delete All")
 def delete_all(msg):
@@ -798,8 +817,7 @@ def delete_all(msg):
         InlineKeyboardButton("✅ YES, Delete All", callback_data="confirm_delete_all"),
         InlineKeyboardButton("❌ NO, Cancel", callback_data="cancel_delete")
     )
-    bot.send_message(msg.chat.id, "⚠️ *WARNING: This will delete ALL your projects!*\nAre you sure?", 
-                     parse_mode="Markdown", reply_markup=markup)
+    safe_send_message(msg.chat.id, "⚠️ WARNING: This will delete ALL your projects!\nAre you sure?", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "📊 Stats")
 def server_info(msg):
@@ -821,29 +839,29 @@ def server_info(msg):
         disk_text = "N/A"
     
     stats_text = f"""
-📊 *YOUR STATISTICS*
+📊 YOUR STATISTICS
 ━━━━━━━━━━━━━━━━━━━━━━
 
-📦 *PROJECTS*
+📦 PROJECTS
 ├─ Total: {total_projects}
 ├─ Running: {running_count} 🟢
 ├─ Stopped: {total_projects - running_count} ⚪
 ├─ GitHub: {github_count} 🐙
 └─ Errors: {error_count} ⚠️
 
-💾 *STORAGE*
+💾 STORAGE
 └─ Disk Usage: {disk_text}
 
-👤 *USER INFO*
-├─ User ID: `{user_id}`
+👤 USER INFO
+├─ User ID: {user_id}
 └─ Workspace: Private
 
-🕐 *Server Time*
+🕐 Server Time
 └─ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-💻 *Powered by @Hexh4ckerOFC*
+💻 Powered by @Hexh4ckerOFC
     """
-    bot.send_message(msg.chat.id, stats_text, parse_mode="Markdown")
+    safe_send_message(msg.chat.id, stats_text)
 
 @bot.message_handler(func=lambda m: m.text == "🔄 Refresh")
 def refresh_status(msg):
@@ -860,12 +878,10 @@ def refresh_status(msg):
             user_errors[project] = f"⚠️ Process died at {datetime.now().strftime('%H:%M:%S')}"
     
     if dead_projects:
-        bot.send_message(msg.chat.id, f"⚠️ *Detected dead processes:*\n{', '.join(dead_projects)}\n\nUse ▶️ Start to restart them.", 
-                         parse_mode="Markdown")
+        safe_send_message(msg.chat.id, f"⚠️ Detected dead processes:\n{', '.join(dead_projects)}\n\nUse Start to restart them.")
     else:
         running_count = len(user_running)
-        bot.send_message(msg.chat.id, f"✅ *Status Refreshed* | 🟢 Running: {running_count}", 
-                         parse_mode="Markdown")
+        safe_send_message(msg.chat.id, f"✅ Status Refreshed | 🟢 Running: {running_count}")
 
 @bot.message_handler(func=lambda m: m.text == "📝 Errors")
 def view_errors(msg):
@@ -873,26 +889,26 @@ def view_errors(msg):
     user_errors = get_user_errors(user_id)
     
     if not user_errors:
-        bot.send_message(msg.chat.id, "✅ *No errors logged! All projects running smoothly.*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, "✅ No errors logged! All projects running smoothly.")
         return
     
-    error_text = f"⚠️ *ERROR LOG*\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    error_text = f"⚠️ ERROR LOG\n━━━━━━━━━━━━━━━━━━━━━━\n"
     for project, error in user_errors.items():
-        error_text += f"\n📁 `{project}`\n└─ {error[:100]}\n"
+        error_text += f"\n📁 {project}\n└─ {error[:100]}\n"
     
     if len(error_text) > 4000:
         error_text = error_text[:4000] + "\n... (truncated)"
     
-    error_text += f"\n💻 *Powered by @Hexh4ckerOFC*"
-    bot.send_message(msg.chat.id, error_text, parse_mode="Markdown")
+    error_text += f"\n💻 Powered by @Hexh4ckerOFC"
+    safe_send_message(msg.chat.id, error_text)
 
 @bot.message_handler(func=lambda m: m.text == "❓ Help")
 def help_command(msg):
-    help_text = f"""
-📚 *HELP MENU v2.0*
+    help_text = """
+📚 HELP MENU v2.0
 ━━━━━━━━━━━━━━━━━━━━━━
 
-🎯 *PROJECT MANAGEMENT*
+🎯 PROJECT MANAGEMENT
 📦 Upload - Deploy new .zip project
 🐙 GitHub Deploy - Clone from GitHub
 📁 Projects - View all projects with status
@@ -902,36 +918,36 @@ def help_command(msg):
 🗑️ Delete - Delete specific project
 🗑️ Delete All - Delete ALL your projects
 
-⚙️ *ENVIRONMENT VARIABLES*
+⚙️ ENVIRONMENT VARIABLES
 ⚙️ Env Vars - Set environment variables for projects
 • KEY=value format
 • Saved to .env file
 • Auto-applied on restart
 
-📊 *MONITORING*
+📊 MONITORING
 📊 Stats - Your storage & project counts
 🔄 Refresh - Check if projects are running
 📝 Errors - See error logs
 
-🔒 *PRIVACY*
+🔒 PRIVACY
 • Each user has their own private workspace
 • No file conflicts between users
 • Your projects are completely isolated
 
-💡 *GITHUB DEPLOYMENT*
+💡 GITHUB DEPLOYMENT
 • Supports public repositories
 • Downloads as ZIP (no git required)
 • Auto-installs requirements.txt
 • Auto-detects main.py
 
-🆘 *SUPPORT*
+🆘 SUPPORT
 Contact: @Hexh4ckerOFC
 
-🟢 *Bot Status: ONLINE & FULLY WORKING*
+🟢 Bot Status: ONLINE & FULLY WORKING
 
-💻 *Powered by @Hexh4ckerOFC*
+💻 Powered by @Hexh4ckerOFC
     """
-    bot.send_message(msg.chat.id, help_text, parse_mode="Markdown")
+    safe_send_message(msg.chat.id, help_text)
 
 # ============== CALLBACK HANDLERS ==============
 
@@ -944,28 +960,28 @@ def handle_callbacks(call):
         project_name = call.data.replace("start_", "")
         result = start_project(user_id, project_name)
         if result:
-            bot.edit_message_text(f"✅ *'{project_name}' started successfully!*", 
-                                call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            bot.edit_message_text(f"✅ {project_name} started successfully!", 
+                                call.message.chat.id, call.message.message_id)
         else:
-            bot.edit_message_text(f"❌ *Failed to start '{project_name}'*\nCheck if main.py exists!", 
-                                call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            bot.edit_message_text(f"❌ Failed to start {project_name}\nCheck if main.py exists!", 
+                                call.message.chat.id, call.message.message_id)
     
     # Handle Stop Project
     elif call.data.startswith("stop_"):
         project_name = call.data.replace("stop_", "")
         if project_name in get_user_running_projects(user_id):
             stop_project(user_id, project_name)
-            bot.edit_message_text(f"⏹️ *'{project_name}' stopped successfully*", 
-                                call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            bot.edit_message_text(f"⏹️ {project_name} stopped successfully", 
+                                call.message.chat.id, call.message.message_id)
         else:
-            bot.edit_message_text(f"⚠️ *'{project_name}' is not running*", 
-                                call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            bot.edit_message_text(f"⚠️ {project_name} is not running", 
+                                call.message.chat.id, call.message.message_id)
     
     # Handle Restart Project
     elif call.data.startswith("restart_"):
         project_name = call.data.replace("restart_", "")
-        bot.edit_message_text(f"🔄 *Restarting '{project_name}'...*", 
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"🔄 Restarting {project_name}...", 
+                            call.message.chat.id, call.message.message_id)
         
         if project_name in get_user_running_projects(user_id):
             stop_project(user_id, project_name)
@@ -973,16 +989,16 @@ def handle_callbacks(call):
         
         result = start_project(user_id, project_name)
         if result:
-            bot.send_message(call.message.chat.id, f"✅ *'{project_name}' restarted successfully!*", parse_mode="Markdown")
+            safe_send_message(call.message.chat.id, f"✅ {project_name} restarted successfully!")
         else:
-            bot.send_message(call.message.chat.id, f"❌ *Failed to restart '{project_name}'*", parse_mode="Markdown")
+            safe_send_message(call.message.chat.id, f"❌ Failed to restart {project_name}")
     
     # Handle Delete Project
     elif call.data.startswith("delete_"):
         project_name = call.data.replace("delete_", "")
         delete_project(user_id, project_name)
-        bot.edit_message_text(f"🗑️ *Project '{project_name}' deleted*", 
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"🗑️ Project {project_name} deleted", 
+                            call.message.chat.id, call.message.message_id)
     
     # Handle Delete All
     elif call.data == "confirm_delete_all":
@@ -1002,13 +1018,13 @@ def handle_callbacks(call):
             if os.path.isdir(item_path):
                 shutil.rmtree(item_path)
         
-        bot.edit_message_text("🗑️ *ALL your projects deleted successfully!*", 
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text("🗑️ ALL your projects deleted successfully!", 
+                            call.message.chat.id, call.message.message_id)
     
     # Handle Cancel
     elif call.data == "cancel_delete":
-        bot.edit_message_text("❌ *Action cancelled*", 
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text("❌ Action cancelled", 
+                            call.message.chat.id, call.message.message_id)
     
     bot.answer_callback_query(call.id)
 
@@ -1045,7 +1061,7 @@ def start_project(user_id, project_name):
     user_running = get_user_running_projects(user_id)
     
     if not os.path.exists(main_file):
-        error_msg = f"main.py not found in '{project_name}'"
+        error_msg = f"main.py not found in {project_name}"
         user_errors = get_user_errors(user_id)
         user_errors[project_name] = error_msg
         return False
@@ -1172,10 +1188,10 @@ def handle_zip(msg):
     user_id = msg.chat.id
     
     if not msg.document.file_name.endswith(".zip"):
-        bot.send_message(msg.chat.id, "❌ Send only .zip file")
+        safe_send_message(msg.chat.id, "❌ Send only .zip file")
         return
 
-    status_msg = bot.send_message(msg.chat.id, "📦 *Processing upload...*", parse_mode="Markdown")
+    status_msg = safe_send_message(msg.chat.id, "📦 Processing upload...")
 
     file_info = bot.get_file(msg.document.file_id)
     downloaded = bot.download_file(file_info.file_path)
@@ -1190,7 +1206,7 @@ def handle_zip(msg):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         project_name = f"{project_name}_{timestamp}"
         project_path = os.path.join(user_dir, project_name)
-        bot.send_message(msg.chat.id, f"📝 *Project renamed to '{project_name}' to avoid conflict*", parse_mode="Markdown")
+        safe_send_message(msg.chat.id, f"📝 Project renamed to {project_name} to avoid conflict")
     
     try:
         zip_path = os.path.join(user_dir, f"{project_name}.zip")
@@ -1213,17 +1229,18 @@ def handle_zip(msg):
         
         os.remove(zip_path)
         
-        bot.edit_message_text("📦 *Extracted!*", msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+        bot.edit_message_text("📦 Extracted!", msg.chat.id, status_msg.message_id)
         
         req_file = os.path.join(extract_path, "requirements.txt")
         if os.path.exists(req_file):
-            subprocess.run(["pip", "install", "-r", req_file], cwd=extract_path)
-            bot.edit_message_text("📥 *Requirements Installed*", msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+            subprocess.Popen(["pip", "install", "-r", req_file], cwd=extract_path,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            bot.edit_message_text("📥 Installing requirements...", msg.chat.id, status_msg.message_id)
         
         main_file = os.path.join(extract_path, "main.py")
         if not os.path.exists(main_file):
-            bot.edit_message_text(f"⚠️ *Warning: No main.py found in '{project_name}'*", 
-                                msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+            bot.edit_message_text(f"⚠️ Warning: No main.py found in {project_name}", 
+                                msg.chat.id, status_msg.message_id)
         
         markup = InlineKeyboardMarkup()
         markup.add(
@@ -1231,13 +1248,13 @@ def handle_zip(msg):
             InlineKeyboardButton("⚙️ Set Env Vars", callback_data=f"env_{project_name}")
         )
         
-        bot.edit_message_text(f"✅ *Project '{project_name}' uploaded successfully!*\n\n📁 Size: {get_folder_size(extract_path)}\n📄 main.py: {'✅' if os.path.exists(main_file) else '❌'}\n\nClick below to start:", 
-                            msg.chat.id, status_msg.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"✅ Project {project_name} uploaded successfully!\n\n📁 Size: {get_folder_size(extract_path)}\n📄 main.py: {'✅' if os.path.exists(main_file) else '❌'}\n\nClick below to start:", 
+                            msg.chat.id, status_msg.message_id, reply_markup=markup)
         
     except Exception as e:
         error_msg = str(e)
-        bot.edit_message_text(f"❌ *Upload failed:* `{error_msg[:150]}`", 
-                            msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"❌ Upload failed: {error_msg[:150]}", 
+                            msg.chat.id, status_msg.message_id)
         user_errors = get_user_errors(user_id)
         user_errors[project_name] = error_msg
 
@@ -1255,7 +1272,6 @@ def get_folder_size(folder_path):
     return f"{total:.1f} TB"
 
 def get_all_users():
-    """Get list of all users"""
     users = []
     for user_id in os.listdir(BASE_DIR):
         user_path = os.path.join(BASE_DIR, user_id)
@@ -1264,14 +1280,12 @@ def get_all_users():
     return users
 
 def get_user_project_count(user_id):
-    """Get project count for a user"""
     user_dir = os.path.join(BASE_DIR, str(user_id))
     if not os.path.exists(user_dir):
         return 0
     return len([d for d in os.listdir(user_dir) if os.path.isdir(os.path.join(user_dir, d))])
 
 def update_admin_stats():
-    """Update admin statistics"""
     users = set()
     total_projects = 0
     total_running = 0
@@ -1294,7 +1308,6 @@ def update_admin_stats():
     admin_stats["total_running"] = total_running
 
 def broadcast_message(message_text, user_ids=None):
-    """Broadcast message to users"""
     if user_ids is None:
         user_ids = get_all_users()
     
@@ -1303,7 +1316,7 @@ def broadcast_message(message_text, user_ids=None):
     
     for uid in user_ids:
         try:
-            bot.send_message(uid, f"📢 *ANNOUNCEMENT*\n\n{message_text}", parse_mode="Markdown")
+            safe_send_message(uid, f"📢 ANNOUNCEMENT\n\n{message_text}")
             success += 1
         except:
             failed += 1
@@ -1312,7 +1325,6 @@ def broadcast_message(message_text, user_ids=None):
     return success, failed
 
 def clean_orphaned_processes():
-    """Clean up orphaned process entries"""
     cleaned = 0
     for user_id, user_projects in list(running_projects.items()):
         for project_name, info in list(user_projects.items()):
@@ -1332,8 +1344,8 @@ def monitor_processes():
                     del running_projects[user_id][project_name]
                     if user_id not in project_errors:
                         project_errors[user_id] = {}
-                    project_errors[user_id][project_name] = f"⚠️ Crashed at {datetime.now().strftime('%H:%M:%S')}"
-                    print(f"⚠️ User {user_id} project '{project_name}' crashed")
+                    project_errors[user_id][project_name] = f"Crashed at {datetime.now().strftime('%H:%M:%S')}"
+                    print(f"User {user_id} project {project_name} crashed")
 
 monitor_thread = threading.Thread(target=monitor_processes, daemon=True)
 monitor_thread.start()
@@ -1341,16 +1353,21 @@ monitor_thread.start()
 # ============== BOT STARTUP ==============
 
 print("="*50)
-print("🔥 PYTHON HOSTING PANEL v2.0 - READY")
+print("PYTHON HOSTING PANEL v2.0 - READY")
 print("="*50)
-print("✅ Bot Running Successfully!")
-print(f"📁 Base Directory: {BASE_DIR}")
-print(f"👥 Multi-User Support: ENABLED")
-print(f"🔒 Private Workspaces: YES")
-print(f"👑 Admin ID: {ADMIN_ID}")
-print(f"🐙 GitHub Integration: ENABLED (No git module required)")
-print(f"⚙️ Environment Variables: ENABLED")
-print(f"💬 Support: @Hexh4ckerOFC")
+print("Bot Running Successfully!")
+print(f"Base Directory: {BASE_DIR}")
+print(f"Multi-User Support: ENABLED")
+print(f"Private Workspaces: YES")
+print(f"Admin ID: {ADMIN_ID}")
+print(f"GitHub Integration: ENABLED")
+print(f"Environment Variables: ENABLED")
 print("="*50)
 
-bot.infinity_polling()
+# Start bot with error handling
+while True:
+    try:
+        bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    except Exception as e:
+        print(f"Bot error: {e}")
+        time.sleep(5)
